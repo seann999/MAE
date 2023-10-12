@@ -18,8 +18,8 @@ if __name__ == '__main__':
     parser.add_argument('--base_learning_rate', type=float, default=1.5e-4)
     parser.add_argument('--weight_decay', type=float, default=0.05)
     parser.add_argument('--mask_ratio', type=float, default=0.75)
-    parser.add_argument('--total_epoch', type=int, default=2000)
-    parser.add_argument('--warmup_epoch', type=int, default=200)
+    parser.add_argument('--total_epoch', type=int, default=400)
+    parser.add_argument('--warmup_epoch', type=int, default=40)
     parser.add_argument('--model_path', type=str, default='vit-t-mae.pt')
 
     args = parser.parse_args()
@@ -32,16 +32,37 @@ if __name__ == '__main__':
     assert batch_size % load_batch_size == 0
     steps_per_update = batch_size // load_batch_size
 
-    train_dataset = torchvision.datasets.CIFAR10('data', train=True, download=True, transform=Compose([ToTensor(), Normalize(0.5, 0.5)]))
-    val_dataset = torchvision.datasets.CIFAR10('data', train=False, download=True, transform=Compose([ToTensor(), Normalize(0.5, 0.5)]))
-    dataloader = torch.utils.data.DataLoader(train_dataset, load_batch_size, shuffle=True, num_workers=4)
-    writer = SummaryWriter(os.path.join('logs', 'cifar10', 'mae-pretrain'))
+    im_mean = np.asarray([0.485, 0.456, 0.406])
+    im_std = np.asarray([0.229, 0.224, 0.225])
+
+    # train_dataset = torchvision.datasets.CIFAR10('data', train=True, download=True, transform=Compose([ToTensor(), Normalize(0.5, 0.5)]))
+    # val_dataset = torchvision.datasets.CIFAR10('data', train=False, download=True, transform=Compose([ToTensor(), Normalize(0.5, 0.5)]))
+    train_dataset = torchvision.datasets.ImageFolder("../datasets/grabber", transform=Compose(
+        [
+            ToTensor(),
+            # Normalize(0.5, 0.5)
+            Normalize(im_mean, im_std),
+        ]))
+    val_dataset = train_dataset
+    dataloader = torch.utils.data.DataLoader(train_dataset, load_batch_size, shuffle=True, num_workers=16)
+    writer = SummaryWriter(os.path.join('logs', 'custom', 'grabber-mae'))
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    model = MAE_ViT(mask_ratio=args.mask_ratio).to(device)
+    model = MAE_ViT(
+        image_size=224,
+        patch_size=16,
+        mask_ratio=args.mask_ratio,
+        # num_layers=12,
+        encoder_head=6,
+        emb_dim=384,
+        decoder_head=6,
+    ).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=args.base_learning_rate * args.batch_size / 256, betas=(0.9, 0.95), weight_decay=args.weight_decay)
     lr_func = lambda epoch: min((epoch + 1) / (args.warmup_epoch + 1e-8), 0.5 * (math.cos(epoch / args.total_epoch * math.pi) + 1))
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=lr_func, verbose=True)
+
+    mean_pt = torch.FloatTensor(im_mean).to(device)
+    std_pt = torch.FloatTensor(im_std).to(device)
 
     step_count = 0
     optim.zero_grad()
@@ -72,7 +93,10 @@ if __name__ == '__main__':
             predicted_val_img = predicted_val_img * mask + val_img * (1 - mask)
             img = torch.cat([val_img * (1 - mask), predicted_val_img, val_img], dim=0)
             img = rearrange(img, '(v h1 w1) c h w -> c (h1 h) (w1 v w)', w1=2, v=3)
-            writer.add_image('mae_image', (img + 1) / 2, global_step=e)
+            # (img * scale) + mean
+            # vis_img = (img + 1) / 2
+            vis_img = (img * std_pt.unsqueeze(1).unsqueeze(1)) + mean_pt.unsqueeze(1).unsqueeze(1)
+            writer.add_image('mae_image', vis_img, global_step=e)
         
         ''' save model '''
         torch.save(model, args.model_path)
