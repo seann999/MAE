@@ -99,4 +99,4 @@ if __name__ == '__main__':
             writer.add_image('mae_image', vis_img, global_step=e)
         
         ''' save model '''
-        torch.save(model, args.model_path)
+        torch.save(model.state_dict(), args.model_path)
